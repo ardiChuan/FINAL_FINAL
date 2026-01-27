@@ -2,7 +2,7 @@ extends CharacterBody2D
 
 # --- Movement Stat ---
 const SPEED 							:= 315.0
-const ACCEL 							:= 200.0
+const ACCEL 							:= 2750.0
 const DECEL 							:= 1500.0
 
 # --- Attack System ---
@@ -14,58 +14,164 @@ var buffered_input						:= AttackType.NONE
 var is_attacking						:= false
 
 # --- Light Attack Stat ---
-var light_attack_duration				:= 0.2
+var light_attack_duration				:= 0.31
 var light_attack_damage 				:= 500
-var light_combo_window 					:= 0.3
+var light_combo_window 					:= 0.35
 
 # --- Heavy Attack Stat ---
-var heavy_attack_duration 				:= 0.6
+var heavy_attack_duration 				:= 0.65
 var heavy_attack_damage 				:= 3000
 var heavy_charge_time 					:= 0.3
+
+# --- Dodge Roll Mechanism ---
+var is_dodging := false
+var dodge_duration := 0.4
+var dodge_speed := 500.0
+var dodge_cooldown_time := 1.5
+var dodge_cooldown := 0.0
+var dodge_distance := 120.0
+var dodge_travelled := 0.0
+var dodge_direction := Vector2.ZERO
+var iframe_duration := 0.3
+var is_invulnerable := false
+
+# --- Block Mechanism ---
+var is_blocking := false
+var block_damage_reduction := 0.6
+
+# --- Parry Mecanism --- 
+var parry_window := 0.2
+var parry_timer := 0.0
+var is_parrying := false
 
 # --- Timer ---
 var attack_timer 						:= 0.0
 var combo_timer 						:= 0.0
 
 # --- Cooldown ---
-var combo_finisher_cooldown 			:= 1
+var combo_finisher_cooldown 			:= 0.9
 var is_recovering 						:= false 
 
 @onready var visual			: ColorRect = $ColorRect
 @onready var camera 		: Camera2D	= $Camera2D
 @onready var hitbox			: Area2D 	= $Area2D
 
+
+
+
+# --- MAIN CORE LOOP ---
+func _ready() : # simple fix temporary 
+	hitbox.monitoring = false
+	
 func _physics_process(delta):
 	var input_dir := get_input_directon()
-	if not is_attacking:
-		update_velocity(input_dir,delta)
-	else :
-		update_velocity(Vector2.ZERO,delta)
-	move_and_slide()
+	update_timers(delta)
+	handle_defense_input()
+	handle_movement(input_dir, delta)
 	handle_attack_input()
 	update_attack(delta)
 
+func update_timers(delta : float) -> void:
+	# Dodge Cooldown 
+	if dodge_cooldown > 0 :
+		dodge_cooldown -= delta
+	# Parry Window
+	if parry_timer > 0 :
+		parry_timer -= delta
+		if parry_timer <= 0 :
+			end_parry()
+	#Combo window 
+	if combo_timer > 0 and not is_attacking:
+		combo_timer -= delta
+		if combo_timer <= 0 :
+			combo_count = 0
+
+
+
+
+# --- Movement Function ---
 func get_input_directon() -> Vector2: 	
 	var direction := Input.get_vector("move_left","move_right","move_up","move_down")
 	return direction.normalized() if direction.length() > 1 else direction
 
-func update_velocity(direction:Vector2, delta : float) -> void: 
+func handle_movement(input_dir : Vector2, delta: float) -> void :
+	if is_dodging :
+		var step = dodge_speed * delta
+		dodge_travelled += step
+		if dodge_travelled >= dodge_distance:
+			is_dodging = false
+			is_invulnerable = false
+		else:
+			velocity = dodge_direction * dodge_speed
+	elif not is_attacking and not is_blocking :
+		update_movement(input_dir, delta)
+	else : 
+		update_movement(Vector2.ZERO, delta) 
+	move_and_slide()
+
+func update_movement(direction:Vector2, delta : float) -> void: 
 	if direction != Vector2.ZERO:
 		var target_velocity = direction * SPEED
-		velocity = velocity.move_toward(target_velocity, ACCEL * SPEED)
+		velocity = velocity.move_toward(target_velocity, ACCEL * delta)
 	else:
 		velocity = velocity.move_toward(Vector2.ZERO, DECEL * delta)
 
+
+
+
+# --- Defense Fucntion ---
+func handle_defense_input() -> void :
+	#Dodge
+	if Input.is_action_just_pressed("dodge") and can_dodge():
+		if velocity.length() > 0 :
+			var dodge_dir = velocity.normalized() 
+			start_dodge(dodge_dir)
+	#Parry 
+	if Input.is_action_just_pressed("block") and can_parry() :
+		start_parry()
+	#Block
+	#	blocking = Input.is_action_pressed("block") and can_block
+
+func can_dodge() -> bool :
+	return not is_dodging and not is_attacking and dodge_cooldown <= 0 
+
+func start_dodge(direction: Vector2 ) -> void :
+	is_dodging = true
+	is_invulnerable = true 
+	dodge_direction = direction.normalized()
+	dodge_travelled = 0.0
+	dodge_cooldown = dodge_cooldown_time
+	
+	await get_tree().create_timer(dodge_duration).timeout
+	is_dodging= false
+	
+	await get_tree().create_timer(max(0, iframe_duration - dodge_duration)).timeout
+	is_invulnerable = false 
+
+#func can_block() -> bool :
+	#return not is_attackking and not is_dodging 
+
+func can_parry() -> bool :
+	return not is_attacking and not is_dodging and not is_parrying 
+
+func start_parry() : 
+	return not is_attacking and not is_dodging and not is_parrying 
+	
+func end_parry() : 
+	is_parrying = false 
+
+
+
+
+# --- Attack Function ---
 func handle_attack_input() -> void :
-	if Input.is_action_just_pressed('attack'):
+	if Input.is_action_just_pressed('light_attack'):
 		if is_attacking :
 			buffered_input = AttackType.LIGHT
 		else :
 			start_light_attack()
 	if Input.is_action_just_pressed('heavy_attack'):
-		if is_attacking :
-			buffered_input = AttackType.HEAVY
-		else :
+		if not is_attacking : 
 			start_heavy_attack()
 
 func start_light_attack() -> void :
@@ -96,20 +202,15 @@ func start_heavy_attack() -> void :
 	hitbox.monitoring = true
 
 func update_attack(delta: float) -> void :
-	if attack_timer > 0 :
-		attack_timer -= delta
+	if not is_attacking :
+		return 
+	attack_timer -= delta
 	if attack_timer <= 0 :
 		end_attack()
-			
-	if combo_timer > 0 and not is_attacking:
-		combo_timer -= delta
-		if combo_timer <= 0 :
-			combo_count = 0
 
 func end_attack() -> void:
 	is_attacking = false
 	hitbox.monitoring = false
-	
 	
 	# Recovery after 3rd light combo hit OR after heavy attack
 	if combo_count == max_combo :
@@ -123,15 +224,10 @@ func end_attack() -> void:
 		visual.color = Color.BLUE
 		return
 	
-	# Execute buffered input
+	# Execute buffered input for light attack 
 	if buffered_input != AttackType.NONE and not is_recovering:
-		var buffered = buffered_input
 		buffered_input = AttackType.NONE
-		
-		if buffered == AttackType.LIGHT:
-			start_light_attack()
-		elif buffered == AttackType.HEAVY:
-			start_heavy_attack()
+		start_light_attack()
 
 func _on_hitbox_body_entered(body: Node2D) -> void:
 	if body.has_method("take_damage"):
@@ -146,6 +242,10 @@ func _on_hitbox_body_entered(body: Node2D) -> void:
 			shake_camera(5.0)
 		spawn_hit_particle(body.global_position)
 
+
+
+
+# --- Effects
 func apply_hitstop(duration : float = 0.05) -> void:
 	Engine.time_scale = 0.1
 	await get_tree().create_timer(duration, true, false, true).timeout
